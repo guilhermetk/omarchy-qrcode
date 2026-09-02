@@ -145,7 +145,7 @@ Panel {
     // (left/center/right); centering on the bar would ignore that choice.
     centerOnBar: false
     focusTarget: input
-    contentWidth: panel.fittedContentWidth(480)
+    contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
     PanelKeyCatcher {
