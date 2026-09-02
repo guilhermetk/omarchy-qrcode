@@ -20,4 +20,16 @@ grep -q 'Component.onDestruction' "$repo_dir/BarWidget.qml"
 grep -q 'textFormat: Text.PlainText' "$repo_dir/BarWidget.qml"
 grep -q '\["/usr/bin/python3", "-I"' "$repo_dir/BarWidget.qml"
 
+# The shell always invokes the helper as `python3 -I`, but the helper must not
+# offer a non-isolated entry point of its own if it is run some other way.
+if [[ -x $repo_dir/qr-tools-helper.py ]]; then
+  printf 'qr-tools-helper.py must not be executable\n' >&2
+  exit 1
+fi
+
+if ! head -n 1 "$repo_dir/qr-tools-helper.py" | grep -qx -- '#!/usr/bin/python3 -I'; then
+  printf 'qr-tools-helper.py shebang must request isolated mode\n' >&2
+  exit 1
+fi
+
 printf 'Helper, model, and source-policy tests passed\n'

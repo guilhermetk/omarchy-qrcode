@@ -267,6 +267,7 @@ Panel {
     root.currentClipboardJob = job
     clipboardProc.requestId = root.nextRequestId()
     clipboardProc.gotResponse = false
+    clipboardProc.downgraded = false
     clipboardProc.expectedStop = false
     if (job.kind === "scan") {
       root.pendingClipboardInput = job.payload
@@ -283,8 +284,25 @@ Panel {
     clipboardProc.running = true
   }
 
+  function reportClipboardFailure(job) {
+    if (job && job.kind === "export") {
+      root.exportStatus = "Saved to ~/Pictures/" + job.basename + ", but could not copy it"
+      root.exportStatusError = true
+      root.queueNotification("export-copy-failed", job.basename)
+    } else {
+      root.queueNotification("scan-copy-failed", "")
+    }
+  }
+
   function handleClipboardResponse(line) {
     if (clipboardProc.gotResponse) {
+      // The helper only speaks again after its ready line when the copy failed
+      // late, so a second valid error line downgrades the reported success.
+      var late = Model.parseResponse(line, clipboardProc.requestId, "clipboard")
+      if (late.valid && !late.ok && !clipboardProc.downgraded) {
+        clipboardProc.downgraded = true
+        root.reportClipboardFailure(root.currentClipboardJob)
+      }
       clipboardProc.expectedStop = true
       clipboardProc.running = false
       return
@@ -293,13 +311,7 @@ Panel {
     var result = Model.parseResponse(line, clipboardProc.requestId, "clipboard")
     var job = root.currentClipboardJob
     if (!result.valid || !result.ok) {
-      if (job && job.kind === "export") {
-        root.exportStatus = "Saved to ~/Pictures/" + job.basename + ", but could not copy it"
-        root.exportStatusError = true
-        root.queueNotification("export-copy-failed", job.basename)
-      } else {
-        root.queueNotification("scan-copy-failed", "")
-      }
+      root.reportClipboardFailure(job)
       return
     }
     if (job && job.kind === "export") {
@@ -473,6 +485,7 @@ Panel {
     id: clipboardProc
     property int requestId: 0
     property bool gotResponse: false
+    property bool downgraded: false
     property bool expectedStop: false
     stdinEnabled: true
 
@@ -488,13 +501,7 @@ Panel {
       var wasExpected = clipboardProc.expectedStop
       clipboardProc.expectedStop = false
       if (!wasExpected && !clipboardProc.gotResponse && root.currentClipboardJob) {
-        if (root.currentClipboardJob.kind === "export") {
-          root.exportStatus = "Saved to ~/Pictures/" + root.currentClipboardJob.basename + ", but could not copy it"
-          root.exportStatusError = true
-          root.queueNotification("export-copy-failed", root.currentClipboardJob.basename)
-        } else {
-          root.queueNotification("scan-copy-failed", "")
-        }
+        root.reportClipboardFailure(root.currentClipboardJob)
       }
       root.currentClipboardJob = null
       if (root.pendingClipboardJob) Qt.callLater(root.startPendingClipboard)
@@ -591,13 +598,7 @@ Panel {
       clipboardProc.running = false
       root.pendingClipboardInput = ""
       root.currentClipboardJob = null
-      if (neverReady && job && job.kind === "export") {
-        root.exportStatus = "Saved to ~/Pictures/" + job.basename + ", but could not copy it"
-        root.exportStatusError = true
-        root.queueNotification("export-copy-failed", job.basename)
-      } else if (neverReady && job) {
-        root.queueNotification("scan-copy-failed", "")
-      }
+      if (neverReady && job) root.reportClipboardFailure(job)
       if (root.pendingClipboardJob) Qt.callLater(root.startPendingClipboard)
     }
   }

@@ -344,6 +344,57 @@ class ProcessTests(unittest.TestCase):
             else:
                 self.fail("session-changing descendant survived timeout")
 
+    def test_teardown_survives_an_unreapable_child(self):
+        process = subprocess.Popen(["/usr/bin/bash", "-c", "sleep 5 & wait"],
+                                   start_new_session=True)
+        try:
+            time.sleep(0.2)
+            before = sorted(os.listdir("/proc/self/fd"))
+            with mock.patch.object(
+                    subprocess.Popen, "wait",
+                    side_effect=subprocess.TimeoutExpired("test", 0.5)):
+                helper.terminate_process_group(process)
+            self.assertEqual(sorted(os.listdir("/proc/self/fd")), before)
+        finally:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=5)
+
+
+class ClipboardTests(unittest.TestCase):
+    def setUp(self):
+        helper._cancelled = False
+        helper._response_sent = False
+        self.addCleanup(setattr, helper, "_response_sent", False)
+        self.addCleanup(setattr, helper, "_cancelled", False)
+
+    def own_clipboard_with(self, body):
+        with tempfile.TemporaryDirectory() as directory:
+            stub = os.path.join(directory, "wl-copy")
+            with open(stub, "wb") as stream:
+                stream.write(b"#!/usr/bin/python3\nimport sys,time\n"
+                             b"sys.stdin.buffer.read()\n" + body)
+            os.chmod(stub, 0o700)
+            captured = io.StringIO()
+            with mock.patch.object(helper, "trusted_tool", return_value=stub):
+                with contextlib.redirect_stdout(captured):
+                    helper.own_clipboard(21, mime_type="text/plain",
+                                         input_data=b"payload")
+        return [json.loads(line) for line in captured.getvalue().splitlines()]
+
+    def test_successful_copy_emits_only_the_ready_line(self):
+        self.assertEqual(self.own_clipboard_with(b"time.sleep(0.2)\n"),
+                         [{"id": 21, "ok": True, "ready": True}])
+
+    def test_copy_failing_after_ready_is_reported_as_a_second_line(self):
+        self.assertEqual(
+            self.own_clipboard_with(b"time.sleep(0.2)\nraise SystemExit(1)\n"),
+            [
+                {"id": 21, "ok": True, "ready": True},
+                {"id": 21, "ok": False, "error": "clipboard_copy_failed"},
+            ],
+        )
+
 
 class ProtocolTests(unittest.TestCase):
     def test_zbar_parser_preserves_colons_and_trailing_newline(self):

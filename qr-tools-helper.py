@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/python3 -I
 
 import base64
 import binascii
@@ -369,9 +369,16 @@ def terminate_process_group(process):
             process.kill()
         except ProcessLookupError:
             pass
-        process.wait(timeout=0.5)
-    for descriptor in descendants:
-        os.close(descriptor)
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            # Teardown runs from the caller's exception path. An unreapable
+            # child must never replace the original failure or strand the
+            # descendant descriptors collected above.
+            pass
+    finally:
+        for descriptor in descendants:
+            os.close(descriptor)
 
 
 def run_bounded(argv, *, timeout, stdout_limit, stderr_limit=MAX_STDERR,
@@ -961,7 +968,13 @@ def own_clipboard(request_id, *, mime_type, input_data=None, input_fd=None):
             max_file_size=MAX_EXPORT_BYTES,
         )
     except ProcessFailure as error:
-        if ready and error.reason in ("timeout", "cancelled"):
+        if ready:
+            if error.reason in ("timeout", "cancelled"):
+                return
+            # The ready line already left the helper, so main() would suppress a
+            # HelperError here. Report the late failure as a second bounded line
+            # instead, and let the shell downgrade the success it displayed.
+            try_emit_error(request_id, "clipboard_copy_failed")
             return
         raise HelperError("clipboard_copy_failed") from error
 
@@ -987,20 +1000,23 @@ def open_export_for_clipboard(basename, expected_digest):
             raise HelperError("export_changed")
         validate_png(fd, MAX_EXPORT_BYTES)
         sealed_fd = sealed_copy(fd, info.st_size)
-        digest = hashlib.sha256()
-        offset = 0
-        while offset < info.st_size:
-            chunk = os.pread(sealed_fd, min(65536, info.st_size - offset), offset)
-            if not chunk:
+        try:
+            digest = hashlib.sha256()
+            offset = 0
+            while offset < info.st_size:
+                chunk = os.pread(sealed_fd, min(65536, info.st_size - offset), offset)
+                if not chunk:
+                    raise HelperError("export_changed")
+                digest.update(chunk)
+                offset += len(chunk)
+            if digest.hexdigest() != expected_digest:
                 raise HelperError("export_changed")
-            digest.update(chunk)
-            offset += len(chunk)
-        if digest.hexdigest() != expected_digest:
+            validate_png(sealed_fd, MAX_EXPORT_BYTES, require_single_link=False)
+            os.lseek(sealed_fd, 0, os.SEEK_SET)
+        except BaseException:
             os.close(sealed_fd)
-            raise HelperError("export_changed")
-        validate_png(sealed_fd, MAX_EXPORT_BYTES, require_single_link=False)
+            raise
         os.close(fd)
-        os.lseek(sealed_fd, 0, os.SEEK_SET)
         return sealed_fd
     except BaseException:
         os.close(fd)
