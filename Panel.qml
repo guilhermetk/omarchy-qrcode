@@ -153,8 +153,9 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Flickable {
+        id: panelScroll
         anchors.fill: parent
-        contentWidth: content.width
+        contentWidth: width
         contentHeight: content.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
@@ -162,7 +163,7 @@ Panel {
 
         ColumnLayout {
           id: content
-          width: parent.width
+          width: panelScroll.width
           spacing: Style.space(14)
 
           ColumnLayout {
