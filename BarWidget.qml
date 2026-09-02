@@ -1,4 +1,6 @@
 import QtQuick
+import Quickshell
+import Quickshell.Io
 import qs.Commons
 import qs.Ui
 
@@ -56,6 +58,18 @@ BarWidget {
       root.injectPanel()
       Qt.callLater(root.injectPanel)
     }
+  }
+
+  IpcHandler {
+    target: "gtiscoski.qr-tools"
+
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.togglePanel() }
+    function scanRegion(): void { root.scan("region") }
+    function scanScreen(): void { root.scan("fullscreen") }
   }
 
   BarIconButton {

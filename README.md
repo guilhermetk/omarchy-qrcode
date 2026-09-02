@@ -54,6 +54,15 @@ qmllint -I "$OMARCHY_PATH/shell" BarWidget.qml Panel.qml
 
 ```bash
 omarchy-shell shell summon gtiscoski.qr-tools '{}'
+omarchy-shell shell hide gtiscoski.qr-tools
+```
+
+Direct IPC on the bar widget:
+
+```bash
+omarchy-shell gtiscoski.qr-tools toggle
+omarchy-shell gtiscoski.qr-tools scanRegion
+omarchy-shell gtiscoski.qr-tools scanScreen
 ```
 
 The panel accepts up to 2048 UTF-8 bytes. It does not upload, retain, or
