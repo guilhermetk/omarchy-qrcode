@@ -220,7 +220,7 @@ Panel {
 
             Text {
               Layout.fillWidth: true
-              text: "Turn text into a qrcode..."
+              text: "Turn text into a qrcode, or read one from the screen"
               color: Qt.darker(root.contentForeground, 1.45)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.bodySmall
