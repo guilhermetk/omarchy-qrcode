@@ -201,7 +201,7 @@ Panel {
 
             Text {
               Layout.alignment: Qt.AlignHCenter
-              text: "▦"
+              text: "󰐲"
               color: Color.accent
               font.family: root.contentFontFamily
               font.pixelSize: 32
@@ -220,7 +220,7 @@ Panel {
 
             Text {
               Layout.fillWidth: true
-              text: "Turn text into a code, or read one from the screen"
+              text: "Turn text into a qrcode..."
               color: Qt.darker(root.contentForeground, 1.45)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.bodySmall
