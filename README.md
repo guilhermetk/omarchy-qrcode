@@ -44,7 +44,7 @@ preferred local Git remote:
 
 ```bash
 omarchy plugin validate .
-qmllint -I "$OMARCHY_PATH/shell" BarWidget.qml QrPanel.qml
+qmllint -I "$OMARCHY_PATH/shell" BarWidget.qml
 ```
 
 ## Use
