@@ -143,7 +143,7 @@ Panel {
     open: root.opened
     centerOnBar: true
     focusTarget: input
-    contentWidth: panel.fittedContentWidth(Style.space(460))
+    contentWidth: panel.fittedContentWidth(480)
     contentHeight: panel.fittedContentHeight(content.implicitHeight)
 
     PanelKeyCatcher {
@@ -165,35 +165,36 @@ Panel {
           width: parent.width
           spacing: Style.space(14)
 
-          RowLayout {
+          ColumnLayout {
             Layout.fillWidth: true
-
-            ColumnLayout {
-              Layout.fillWidth: true
-              spacing: Style.space(2)
-
-              Text {
-                text: "QR TOOLS"
-                color: root.contentForeground
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.title
-                font.bold: true
-                font.letterSpacing: 1.5
-              }
-
-              Text {
-                text: "Turn text into a code, or read one from the screen"
-                color: Qt.darker(root.contentForeground, 1.45)
-                font.family: root.contentFontFamily
-                font.pixelSize: Style.font.bodySmall
-              }
-            }
+            spacing: Style.space(4)
 
             Text {
+              Layout.alignment: Qt.AlignHCenter
               text: "▦"
               color: Color.accent
               font.family: root.contentFontFamily
               font.pixelSize: 32
+            }
+
+            Text {
+              Layout.fillWidth: true
+              text: "QR TOOLS"
+              color: root.contentForeground
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.title
+              font.bold: true
+              font.letterSpacing: 1.5
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              Layout.fillWidth: true
+              text: "Turn text into a code, or read one from the screen"
+              color: Qt.darker(root.contentForeground, 1.45)
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.bodySmall
+              horizontalAlignment: Text.AlignHCenter
             }
           }
 
@@ -312,7 +313,7 @@ Panel {
             Canvas {
               id: qrCanvas
               readonly property int moduleSize: root.qrSize > 0
-                ? Math.max(2, Math.floor(Style.space(300) / root.qrSize))
+                ? Math.max(2, Math.floor(300 / root.qrSize))
                 : 0
 
               Layout.alignment: Qt.AlignHCenter
