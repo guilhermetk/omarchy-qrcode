@@ -18,22 +18,22 @@ region capture.
 - Decode QR Code, EAN, UPC, Code 128, Code 93, Code 39, Codabar, DataBar, and
   Interleaved 2 of 5 symbols through ZBar.
 - Copy decoded data without automatically opening URLs.
-- Keep temporary generated and captured data in private runtime storage.
+- Keep captures in private runtime storage only while they are being decoded.
 
 ## Dependencies
 
-Install the two additional runtime tools:
+Install the runtime tools:
 
 ```bash
-omarchy pkg add qrencode zbar
+omarchy pkg add python qrencode zbar
 ```
 
-Omarchy already provides `wl-clipboard` and its screenshot dependencies. On
-Arch, `zbar` installs ImageMagick, which QR Tools uses for exact-size PNG
-exports.
-If either package is missing, QR Tools shows a warning and offers an explicit
-**Install dependencies** action that opens the command above in a visible
-terminal. It never installs packages automatically.
+Omarchy already provides `wl-clipboard` and its screenshot dependencies. QR
+Tools uses only Python's standard library for supervision, filesystem safety,
+and exact-size PNG rendering; it does not compile code or use ImageMagick.
+If Python, QRencode, or ZBar is missing, QR Tools shows a warning and offers an
+explicit **Install dependencies** action that opens the command above in a
+visible terminal. It never installs packages automatically.
 
 ## Install
 
@@ -74,18 +74,31 @@ omarchy-shell gtiscoski.qr-tools scanRegion
 omarchy-shell gtiscoski.qr-tools scanScreen
 ```
 
-The panel accepts up to 2048 UTF-8 bytes.
+The panel accepts up to 2,048 UTF-8 bytes. Scanned payloads are limited to 4,096
+bytes. Screenshots are limited to 64 MiB, 10,000 pixels per side, and 40 million
+pixels total. Exports are limited to 2,048 x 2,048 pixels and 8 MiB.
 
 ## Privacy and files
 
 - Generation and scanning happen locally. QR Tools never uploads or
   automatically opens decoded content.
-- Temporary captures are deleted after scanning. While a generated QR is open,
-  its payload is held in a mode-`600` runtime file and removed when the panel
-  closes normally; the runtime directory is cleared when the user session ends.
-- Successful scans copy decoded text to the clipboard.
+- Generated plaintext is not persisted. The validated matrix exists only in
+  the shell while its panel is open.
+- Temporary captures live in a random mode-`700` operation directory beneath
+  the user's validated `XDG_RUNTIME_DIR`. QR Tools opens and validates the image
+  by directory descriptor, copies it to a sealed in-memory file for decoding,
+  and deletes the capture after scanning.
+- Successful scans copy decoded bytes to the clipboard. Clipboard ownership is
+  supervised in the foreground until the data is replaced, the shell exits, or
+  five minutes pass.
 - Export runs only when **Export PNG** is clicked. It saves the image under
-  `~/Pictures` and copies the same PNG to the clipboard.
+  `~/Pictures` as a mode-`600` file and copies the same PNG to the clipboard.
+  The home and Pictures directories are opened component-by-component without
+  following symlinks. A fully written and synced hidden file is published with
+  an exclusive hard link, so an existing file or symlink is never replaced.
+- External commands use validated root-owned executables at fixed `/usr/bin`
+  paths, bounded input/output, absolute deadlines, and supervised process
+  groups. Helper errors are fixed codes; raw tool output is never rendered.
 
 ## Remove
 
@@ -98,11 +111,10 @@ you explicitly exported to `~/Pictures`.
 
 ## Development
 
-Run the script and parser tests:
+Run the helper, parser, and source-policy tests:
 
 ```bash
 tests/test-scripts.sh
-node tests/test-model.js
 ```
 
 ## License

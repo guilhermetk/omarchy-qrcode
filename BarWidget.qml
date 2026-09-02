@@ -19,34 +19,38 @@ Panel {
 
   readonly property color contentForeground: bar ? bar.foreground : Color.foreground
   readonly property string contentFontFamily: bar ? bar.fontFamily : Style.font.family
+  readonly property string helperPath: scriptPath("qr-tools-helper.py")
 
   property var qrRows: []
   property int qrSize: 0
   property string sourceLabel: ""
   property string error: ""
-  property string pendingText: ""
   property bool loading: false
-  property bool expectedStop: false
   property var scanHighlight: null
   property bool highlightOpen: false
   property int exportPixelSize: 1024
-  property string exportOutput: ""
-  property string exportFailure: ""
   property string exportStatus: ""
-  property bool discardAfterExport: false
+  property bool exportStatusError: false
   property bool dependenciesChecked: false
+  property bool pythonAvailable: true
   property bool qrencodeAvailable: true
   property bool zbarAvailable: true
-  property bool imagemagickAvailable: true
+  property int requestSequence: 0
+  property var pendingClipboardJob: null
+  property var currentClipboardJob: null
+  property string pendingClipboardInput: ""
+  property var pendingNotificationJob: null
+  property var currentNotificationJob: null
+  property bool destroying: false
 
   readonly property bool showingQr: qrSize > 0 && !loading && error === ""
   readonly property bool dependenciesMissing: dependenciesChecked &&
-    (!qrencodeAvailable || !zbarAvailable || !imagemagickAvailable)
+    (!pythonAvailable || !qrencodeAvailable || !zbarAvailable)
   readonly property string missingDependencies: {
     var missing = []
+    if (!pythonAvailable) missing.push("python")
     if (!qrencodeAvailable) missing.push("qrencode")
     if (!zbarAvailable) missing.push("zbar")
-    if (!imagemagickAvailable) missing.push("ImageMagick")
     return missing.join(", ")
   }
   readonly property var highlightScreen: {
@@ -67,6 +71,16 @@ Panel {
     return decodeURIComponent(url.replace(/^file:\/\//, ""))
   }
 
+  function nextRequestId() {
+    root.requestSequence++
+    if (root.requestSequence > 2000000000) root.requestSequence = 1
+    return root.requestSequence
+  }
+
+  function helperCommand(arguments) {
+    return ["/usr/bin/python3", "-I", root.helperPath].concat(arguments)
+  }
+
   function open() {
     root.refreshDependencies()
     root.controller.show()
@@ -74,46 +88,46 @@ Panel {
   }
 
   function refreshDependencies() {
-    if (!dependencyProc.running) dependencyProc.running = true
-  }
-
-  function applyDependencyStatus(raw) {
-    try {
-      var data = JSON.parse(String(raw || "{}"))
-      root.qrencodeAvailable = data.qrencode === true
-      root.zbarAvailable = data.zbar === true
-      root.imagemagickAvailable = data.imagemagick === true
-      root.dependenciesChecked = true
-    } catch (error) {
-      root.dependenciesChecked = false
-      console.warn(root.moduleName + ": invalid dependency status:", error)
-    }
+    if (dependencyProc.running) return
+    dependencyProc.requestId = root.nextRequestId()
+    dependencyProc.responseCount = 0
+    dependencyProc.responseLine = ""
+    dependencyProc.expectedStop = false
+    dependencyProc.command = root.helperCommand([
+      "dependencies", String(dependencyProc.requestId)
+    ])
+    dependencyDeadline.restart()
+    dependencyProc.running = true
   }
 
   function installDependencies() {
     if (!root.bar) return
     root.close()
-    root.bar.run("omarchy launch floating terminal with presentation \"omarchy pkg add qrencode zbar\"")
+    root.bar.run("omarchy launch floating terminal with presentation \"omarchy pkg add python qrencode zbar\"")
   }
 
   function close() {
     if (qrProc.running) {
-      root.expectedStop = true
+      qrProc.expectedStop = true
       qrProc.running = false
     }
-    root.pendingText = ""
+    qrDeadline.stop()
+    qrProc.pendingInput = ""
+    if (exportProc.running) {
+      exportProc.expectedStop = true
+      exportProc.running = false
+    }
+    exportDeadline.stop()
+    exportProc.pendingInput = ""
     root.qrRows = []
     root.qrSize = 0
     root.sourceLabel = ""
     root.error = ""
     root.loading = false
     root.exportStatus = ""
+    root.exportStatusError = false
     input.text = ""
     root.controller.hide()
-    if (exportProc.running)
-      root.discardAfterExport = true
-    else
-      Quickshell.execDetached([root.scriptPath("export-qr.sh"), "--discard"])
   }
 
   function toggle() {
@@ -128,164 +142,388 @@ Panel {
       root.error = "Enter text to generate a QR code"
       return
     }
-    root.startGeneration([root.scriptPath("qr-matrix.sh"), "--persist"], text, "Typed text")
+    root.startGeneration("generate-stdin", text, "Typed text")
   }
 
   function generateClipboard() {
     if (root.dependenciesChecked && !root.qrencodeAvailable) return
-    root.startGeneration([root.scriptPath("qr-matrix.sh"), "--clipboard", "--persist"], "", "Clipboard")
+    root.startGeneration("generate-clipboard", "", "Clipboard")
   }
 
-  function startGeneration(command, text, label) {
+  function startGeneration(subcommand, text, label) {
     if (qrProc.running || exportProc.running) return
     root.qrRows = []
     root.qrSize = 0
     root.error = ""
     root.loading = true
-    root.expectedStop = false
     root.exportStatus = ""
+    root.exportStatusError = false
     root.sourceLabel = label
-    root.pendingText = text
-    qrProc.command = command
+    qrProc.pendingInput = text
+    qrProc.requestId = root.nextRequestId()
+    qrProc.responseCount = 0
+    qrProc.responseLine = ""
+    qrProc.expectedStop = false
+    qrProc.command = root.helperCommand([subcommand, String(qrProc.requestId)])
+    qrDeadline.restart()
     qrProc.running = true
   }
 
-  function updateQr(raw) {
-    var matrix = Model.parseQrMatrix(raw)
-    root.qrRows = matrix.rows
-    root.qrSize = matrix.size
-    if (matrix.size > 0) root.exportPixelSize = 1024
+  function applyQrResponse(line) {
+    var result = Model.parseResponse(line, qrProc.requestId, "generate")
+    if (!result.valid || !result.ok) {
+      root.error = result.message
+      root.qrRows = []
+      root.qrSize = 0
+      return
+    }
+    root.qrRows = result.rows
+    root.qrSize = result.size
+    root.exportPixelSize = 1024
     qrCanvas.requestPaint()
   }
 
   function exportQr() {
-    if (!root.showingQr || exportProc.running || !root.imagemagickAvailable) return
-    root.exportOutput = ""
-    root.exportFailure = ""
+    if (!root.showingQr || exportProc.running) return
     root.exportStatus = "Exporting..."
-    root.discardAfterExport = false
-    exportProc.command = [root.scriptPath("export-qr.sh"), String(root.exportPixelSize)]
+    root.exportStatusError = false
+    exportProc.requestId = root.nextRequestId()
+    exportProc.responseCount = 0
+    exportProc.responseLine = ""
+    exportProc.expectedStop = false
+    exportProc.pendingInput = root.qrRows.join(",")
+    exportProc.command = root.helperCommand([
+      "export", String(exportProc.requestId), String(root.exportPixelSize)
+    ])
+    exportDeadline.restart()
     exportProc.running = true
   }
 
   function scan(mode) {
+    if (scanProc.running) return
     if (root.dependenciesChecked && !root.zbarAvailable) {
       root.open()
       return
     }
     root.close()
-    if (mode !== "fullscreen") {
-      Quickshell.execDetached([root.scriptPath("scan-code.sh"), mode])
-      return
-    }
-    if (scanProc.running) return
     root.highlightOpen = false
-    scanProc.command = [root.scriptPath("scan-code.sh"), mode, "--highlight-json"]
+    root.scanHighlight = null
+    scanProc.requestId = root.nextRequestId()
+    scanProc.responseCount = 0
+    scanProc.responseLine = ""
+    scanProc.expectedStop = false
+    scanProc.mode = mode
+    scanProc.command = root.helperCommand([
+      "scan", String(scanProc.requestId), mode
+    ])
+    scanDeadline.interval = scanProc.mode === "region" ? 72000 : 32000
+    scanDeadline.restart()
     scanProc.running = true
   }
 
-  function showScanHighlight(raw) {
-    var highlight = Model.parseScanHighlight(raw)
+  function showScanHighlight(highlight) {
     if (!highlight) return
     root.scanHighlight = highlight
     root.highlightOpen = true
     highlightTimer.restart()
   }
 
+  function handleScanResponse(line) {
+    var result = Model.parseResponse(line, scanProc.requestId, "scan")
+    if (!result.valid || !result.ok) {
+      if (result.errorCode === "no_code") root.queueNotification("scan-no-code", "")
+      else if (result.errorCode !== "scan_cancelled") root.queueNotification("scan-failed", "")
+      return
+    }
+    root.queueClipboard({ kind: "scan", payload: result.payload, highlight: result.highlight })
+  }
+
+  function handleExportResponse(line) {
+    var result = Model.parseResponse(line, exportProc.requestId, "export")
+    if (!result.valid || !result.ok) {
+      root.exportStatus = result.message
+      root.exportStatusError = true
+      return
+    }
+    root.exportStatus = "Saved to ~/Pictures/" + result.basename + "; copying..."
+    root.queueClipboard({ kind: "export", basename: result.basename, sha256: result.sha256 })
+  }
+
+  function queueClipboard(job) {
+    root.pendingClipboardJob = job
+    if (clipboardProc.running) {
+      clipboardProc.expectedStop = true
+      clipboardDeadline.stop()
+      clipboardProc.running = false
+      return
+    }
+    root.startPendingClipboard()
+  }
+
+  function startPendingClipboard() {
+    if (!root.pendingClipboardJob || root.destroying) return
+    var job = root.pendingClipboardJob
+    root.pendingClipboardJob = null
+    root.currentClipboardJob = job
+    clipboardProc.requestId = root.nextRequestId()
+    clipboardProc.gotResponse = false
+    clipboardProc.expectedStop = false
+    if (job.kind === "scan") {
+      root.pendingClipboardInput = job.payload
+      clipboardProc.command = root.helperCommand([
+        "clipboard-text", String(clipboardProc.requestId)
+      ])
+    } else {
+      root.pendingClipboardInput = ""
+      clipboardProc.command = root.helperCommand([
+        "clipboard-image", String(clipboardProc.requestId), job.basename, job.sha256
+      ])
+    }
+    clipboardDeadline.restart()
+    clipboardProc.running = true
+  }
+
+  function handleClipboardResponse(line) {
+    if (clipboardProc.gotResponse) {
+      clipboardProc.expectedStop = true
+      clipboardProc.running = false
+      return
+    }
+    clipboardProc.gotResponse = true
+    var result = Model.parseResponse(line, clipboardProc.requestId, "clipboard")
+    var job = root.currentClipboardJob
+    if (!result.valid || !result.ok) {
+      if (job && job.kind === "export") {
+        root.exportStatus = "Saved to ~/Pictures/" + job.basename + ", but could not copy it"
+        root.exportStatusError = true
+        root.queueNotification("export-copy-failed", job.basename)
+      } else {
+        root.queueNotification("scan-copy-failed", "")
+      }
+      return
+    }
+    if (job && job.kind === "export") {
+      root.exportStatus = "Saved and copied to ~/Pictures/" + job.basename
+      root.exportStatusError = false
+      root.queueNotification("export-success", job.basename)
+    } else if (job && job.kind === "scan") {
+      root.showScanHighlight(job.highlight)
+      root.queueNotification("scan-success", "")
+    }
+  }
+
+  function queueNotification(event, basename) {
+    root.pendingNotificationJob = { event: event, basename: basename }
+    if (notificationProc.running) {
+      notificationProc.expectedStop = true
+      notificationDeadline.stop()
+      notificationProc.running = false
+      return
+    }
+    root.startPendingNotification()
+  }
+
+  function startPendingNotification() {
+    if (!root.pendingNotificationJob || root.destroying) return
+    var job = root.pendingNotificationJob
+    root.pendingNotificationJob = null
+    root.currentNotificationJob = job
+    notificationProc.requestId = root.nextRequestId()
+    notificationProc.gotResponse = false
+    notificationProc.expectedStop = false
+    var args = ["notify", String(notificationProc.requestId), job.event]
+    if (job.basename !== "") args.push(job.basename)
+    notificationProc.command = root.helperCommand(args)
+    notificationDeadline.restart()
+    notificationProc.running = true
+  }
+
   Process {
     id: dependencyProc
-    command: [root.scriptPath("check-dependencies.sh")]
+    property int requestId: 0
+    property int responseCount: 0
+    property string responseLine: ""
+    property bool expectedStop: false
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.applyDependencyStatus(text)
+    stdout: SplitParser {
+      onRead: function(line) {
+        dependencyProc.responseCount++
+        if (dependencyProc.responseCount === 1) dependencyProc.responseLine = line
+      }
+    }
+    onExited: function(exitCode) {
+      dependencyDeadline.stop()
+      if (!dependencyProc.expectedStop && exitCode === 0 && dependencyProc.responseCount === 1) {
+        var result = Model.parseResponse(dependencyProc.responseLine,
+                                         dependencyProc.requestId, "dependencies")
+        if (result.valid && result.ok) {
+          root.pythonAvailable = true
+          root.qrencodeAvailable = result.qrencode
+          root.zbarAvailable = result.zbar
+          root.dependenciesChecked = true
+        }
+      }
+      dependencyProc.expectedStop = false
+      dependencyProc.responseLine = ""
     }
   }
 
   Process {
     id: qrProc
+    property int requestId: 0
+    property int responseCount: 0
+    property string responseLine: ""
+    property bool expectedStop: false
+    property string pendingInput: ""
     stdinEnabled: true
 
     onStarted: {
-      if (root.pendingText !== "") write(root.pendingText + "\n")
-      root.pendingText = ""
+      if (pendingInput !== "") write(pendingInput + "\n")
+      pendingInput = ""
     }
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: if (!root.expectedStop) root.updateQr(text)
-    }
-
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        if (root.expectedStop) return
-        var detail = String(text || "").trim()
-        if (detail !== "") root.error = detail
+    stdout: SplitParser {
+      onRead: function(line) {
+        qrProc.responseCount++
+        if (qrProc.responseCount === 1) qrProc.responseLine = line
       }
     }
 
     onExited: function(exitCode) {
+      qrDeadline.stop()
       root.loading = false
-      if (root.expectedStop) {
-        root.expectedStop = false
+      if (qrProc.expectedStop) {
+        qrProc.expectedStop = false
         return
       }
-      Qt.callLater(function() {
-        if (exitCode !== 0 || root.qrSize === 0) {
-          root.qrRows = []
-          root.qrSize = 0
-          if (root.error === "") root.error = "Could not generate QR code"
-        }
-      })
+      if (exitCode === 0 && qrProc.responseCount === 1) {
+        root.applyQrResponse(qrProc.responseLine)
+      } else {
+        root.qrRows = []
+        root.qrSize = 0
+        root.error = "Could not generate QR code"
+      }
+      qrProc.responseLine = ""
     }
   }
 
   Process {
     id: scanProc
+    property int requestId: 0
+    property int responseCount: 0
+    property string responseLine: ""
+    property bool expectedStop: false
+    property string mode: "fullscreen"
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.showScanHighlight(text)
+    stdout: SplitParser {
+      onRead: function(line) {
+        scanProc.responseCount++
+        if (scanProc.responseCount === 1) scanProc.responseLine = line
+      }
+    }
+    onExited: function(exitCode) {
+      scanDeadline.stop()
+      if (!scanProc.expectedStop) {
+        if (exitCode === 0 && scanProc.responseCount === 1)
+          root.handleScanResponse(scanProc.responseLine)
+        else
+          root.queueNotification("scan-failed", "")
+      }
+      scanProc.expectedStop = false
+      scanProc.responseLine = ""
     }
   }
 
   Process {
     id: exportProc
+    property int requestId: 0
+    property int responseCount: 0
+    property string responseLine: ""
+    property bool expectedStop: false
+    property string pendingInput: ""
+    stdinEnabled: true
 
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.exportOutput = String(text || "").trim()
+    onStarted: {
+      write(pendingInput + "\n")
+      pendingInput = ""
     }
-
-    stderr: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: root.exportFailure = String(text || "").trim()
+    stdout: SplitParser {
+      onRead: function(line) {
+        exportProc.responseCount++
+        if (exportProc.responseCount === 1) exportProc.responseLine = line
+      }
     }
-
     onExited: function(exitCode) {
-      Qt.callLater(function() {
-        if (root.discardAfterExport || !root.opened) {
-          root.discardAfterExport = false
-          Quickshell.execDetached([root.scriptPath("export-qr.sh"), "--discard"])
-          return
-        }
-        if (exitCode === 0 && root.exportOutput !== "") {
-          var home = Quickshell.env("HOME") || ""
-          var displayPath = home !== "" && root.exportOutput.indexOf(home + "/") === 0
-            ? "~" + root.exportOutput.slice(home.length)
-            : root.exportOutput
-          root.exportStatus = "Saved and copied to " + displayPath
+      exportDeadline.stop()
+      if (exportProc.expectedStop) {
+        exportProc.expectedStop = false
+        return
+      }
+      if (exitCode === 0 && exportProc.responseCount === 1) {
+        root.handleExportResponse(exportProc.responseLine)
+      } else {
+        root.exportStatus = "Could not export QR code"
+        root.exportStatusError = true
+      }
+      exportProc.responseLine = ""
+    }
+  }
+
+  Process {
+    id: clipboardProc
+    property int requestId: 0
+    property bool gotResponse: false
+    property bool expectedStop: false
+    stdinEnabled: true
+
+    onStarted: {
+      if (root.pendingClipboardInput !== "") write(root.pendingClipboardInput + "\n")
+      root.pendingClipboardInput = ""
+    }
+    stdout: SplitParser {
+      onRead: function(line) { if (!clipboardProc.expectedStop) root.handleClipboardResponse(line) }
+    }
+    onExited: function(_exitCode) {
+      clipboardDeadline.stop()
+      var wasExpected = clipboardProc.expectedStop
+      clipboardProc.expectedStop = false
+      if (!wasExpected && !clipboardProc.gotResponse && root.currentClipboardJob) {
+        if (root.currentClipboardJob.kind === "export") {
+          root.exportStatus = "Saved to ~/Pictures/" + root.currentClipboardJob.basename + ", but could not copy it"
+          root.exportStatusError = true
+          root.queueNotification("export-copy-failed", root.currentClipboardJob.basename)
         } else {
-          root.exportStatus = root.exportFailure !== ""
-            ? root.exportFailure
-            : "Could not export QR code"
+          root.queueNotification("scan-copy-failed", "")
         }
-      })
+      }
+      root.currentClipboardJob = null
+      if (root.pendingClipboardJob) Qt.callLater(root.startPendingClipboard)
+    }
+  }
+
+  Process {
+    id: notificationProc
+    property int requestId: 0
+    property bool gotResponse: false
+    property bool expectedStop: false
+
+    stdout: SplitParser {
+      onRead: function(line) {
+        if (notificationProc.expectedStop || notificationProc.gotResponse) return
+        notificationProc.gotResponse = true
+        Model.parseResponse(line, notificationProc.requestId, "notify")
+      }
+    }
+    onExited: function(_exitCode) {
+      notificationDeadline.stop()
+      notificationProc.expectedStop = false
+      root.currentNotificationJob = null
+      if (root.pendingNotificationJob) Qt.callLater(root.startPendingNotification)
     }
   }
 
   Timer {
+    id: initialDependencyTimer
     interval: 250
     running: true
     repeat: false
@@ -296,6 +534,83 @@ Panel {
     id: highlightTimer
     interval: 950
     onTriggered: root.highlightOpen = false
+  }
+
+  Timer {
+    id: dependencyDeadline
+    interval: 2500
+    onTriggered: {
+      dependencyProc.expectedStop = true
+      dependencyProc.running = false
+      root.pythonAvailable = false
+      root.dependenciesChecked = true
+    }
+  }
+
+  Timer {
+    id: qrDeadline
+    interval: 9000
+    onTriggered: {
+      qrProc.expectedStop = true
+      qrProc.running = false
+      qrProc.pendingInput = ""
+      root.loading = false
+      root.error = "QR generation timed out"
+    }
+  }
+
+  Timer {
+    id: scanDeadline
+    interval: 32000
+    onTriggered: {
+      scanProc.expectedStop = true
+      scanProc.running = false
+      root.queueNotification("scan-failed", "")
+    }
+  }
+
+  Timer {
+    id: exportDeadline
+    interval: 16000
+    onTriggered: {
+      exportProc.expectedStop = true
+      exportProc.running = false
+      exportProc.pendingInput = ""
+      root.exportStatus = "QR export timed out"
+      root.exportStatusError = true
+    }
+  }
+
+  Timer {
+    id: clipboardDeadline
+    interval: 301000
+    onTriggered: {
+      var job = root.currentClipboardJob
+      var neverReady = !clipboardProc.gotResponse
+      clipboardProc.expectedStop = true
+      clipboardProc.running = false
+      root.pendingClipboardInput = ""
+      root.currentClipboardJob = null
+      if (neverReady && job && job.kind === "export") {
+        root.exportStatus = "Saved to ~/Pictures/" + job.basename + ", but could not copy it"
+        root.exportStatusError = true
+        root.queueNotification("export-copy-failed", job.basename)
+      } else if (neverReady && job) {
+        root.queueNotification("scan-copy-failed", "")
+      }
+      if (root.pendingClipboardJob) Qt.callLater(root.startPendingClipboard)
+    }
+  }
+
+  Timer {
+    id: notificationDeadline
+    interval: 4000
+    onTriggered: {
+      notificationProc.expectedStop = true
+      notificationProc.running = false
+      root.currentNotificationJob = null
+      if (root.pendingNotificationJob) Qt.callLater(root.startPendingNotification)
+    }
   }
 
   IpcHandler {
@@ -524,11 +839,14 @@ Panel {
                 Text {
                   Layout.fillWidth: true
                   text: "Missing: " + root.missingDependencies
+                  textFormat: Text.PlainText
                   color: root.contentForeground
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.bodySmall
                   font.bold: true
                   wrapMode: Text.Wrap
+                  maximumLineCount: 2
+                  elide: Text.ElideRight
                 }
               }
 
@@ -646,10 +964,13 @@ Panel {
             visible: root.error !== ""
             Layout.fillWidth: true
             text: root.error
+            textFormat: Text.PlainText
             color: Color.urgent
             font.family: root.contentFontFamily
             font.pixelSize: Style.font.bodySmall
             wrapMode: Text.Wrap
+            maximumLineCount: 3
+            elide: Text.ElideRight
             horizontalAlignment: Text.AlignHCenter
           }
 
@@ -661,6 +982,7 @@ Panel {
             Text {
               Layout.alignment: Qt.AlignHCenter
               text: root.sourceLabel.toUpperCase()
+              textFormat: Text.PlainText
               color: Qt.darker(root.contentForeground, 1.45)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
@@ -720,6 +1042,7 @@ Panel {
 
                 Text {
                   text: root.exportPixelSize + " x " + root.exportPixelSize + " px"
+                  textFormat: Text.PlainText
                   color: root.contentForeground
                   font.family: root.contentFontFamily
                   font.pixelSize: Style.font.caption
@@ -746,7 +1069,7 @@ Panel {
               bordered: true
               focusable: true
               foreground: root.contentForeground
-              enabled: !exportProc.running && root.imagemagickAvailable
+              enabled: !exportProc.running
               onClicked: root.exportQr()
             }
 
@@ -754,11 +1077,14 @@ Panel {
               visible: root.exportStatus !== ""
               Layout.fillWidth: true
               text: root.exportStatus
-              color: root.exportFailure !== "" ? Color.urgent
+              textFormat: Text.PlainText
+              color: root.exportStatusError ? Color.urgent
                 : Qt.darker(root.contentForeground, 1.35)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption
               wrapMode: Text.Wrap
+              maximumLineCount: 3
+              elide: Text.ElideRight
               horizontalAlignment: Text.AlignHCenter
             }
 
@@ -773,6 +1099,27 @@ Panel {
           }
         }
       }
+    }
+  }
+
+  Component.onDestruction: {
+    root.destroying = true
+    root.pendingClipboardInput = ""
+    root.pendingClipboardJob = null
+    root.pendingNotificationJob = null
+    initialDependencyTimer.stop()
+    dependencyDeadline.stop()
+    qrDeadline.stop()
+    scanDeadline.stop()
+    exportDeadline.stop()
+    clipboardDeadline.stop()
+    notificationDeadline.stop()
+    highlightTimer.stop()
+    var processes = [dependencyProc, qrProc, scanProc, exportProc,
+                     clipboardProc, notificationProc]
+    for (var index = 0; index < processes.length; index++) {
+      processes[index].expectedStop = true
+      if (processes[index].running) processes[index].running = false
     }
   }
 }
