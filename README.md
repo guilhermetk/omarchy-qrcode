@@ -11,7 +11,8 @@ region capture.
 - Generate from the Wayland clipboard without placing its contents in process
   arguments.
 - Scan a selected screen region.
-- Scan the focused screen automatically.
+- Scan the focused screen automatically and briefly highlight the detected
+  code in place.
 - Decode QR Code, EAN, UPC, Code 128, Code 93, Code 39, Codabar, DataBar, and
   Interleaved 2 of 5 symbols through ZBar.
 - Copy decoded data without automatically opening URLs.

@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
+import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
@@ -26,8 +27,19 @@ Panel {
   property string pendingText: ""
   property bool loading: false
   property bool expectedStop: false
+  property var scanHighlight: null
+  property bool highlightOpen: false
 
   readonly property bool showingQr: qrSize > 0 && !loading && error === ""
+  readonly property var highlightScreen: {
+    var screens = Quickshell.screens || []
+    var monitor = scanHighlight ? scanHighlight.monitor : ""
+    for (var index = 0; index < screens.length; index++) {
+      if (monitor !== "" && screens[index].name === monitor) return screens[index]
+    }
+    var anchorWindow = button.QsWindow.window
+    return anchorWindow ? anchorWindow.screen : null
+  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -97,7 +109,22 @@ Panel {
 
   function scan(mode) {
     root.close()
-    Quickshell.execDetached([root.scriptPath("scan-code.sh"), mode])
+    if (mode !== "fullscreen") {
+      Quickshell.execDetached([root.scriptPath("scan-code.sh"), mode])
+      return
+    }
+    if (scanProc.running) return
+    root.highlightOpen = false
+    scanProc.command = [root.scriptPath("scan-code.sh"), mode, "--highlight-json"]
+    scanProc.running = true
+  }
+
+  function showScanHighlight(raw) {
+    var highlight = Model.parseScanHighlight(raw)
+    if (!highlight) return
+    root.scanHighlight = highlight
+    root.highlightOpen = true
+    highlightTimer.restart()
   }
 
   Process {
@@ -139,6 +166,21 @@ Panel {
     }
   }
 
+  Process {
+    id: scanProc
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.showScanHighlight(text)
+    }
+  }
+
+  Timer {
+    id: highlightTimer
+    interval: 950
+    onTriggered: root.highlightOpen = false
+  }
+
   IpcHandler {
     target: "gtiscoski.qr-tools"
 
@@ -162,6 +204,66 @@ Panel {
       if (mouseButton === Qt.RightButton) root.scan("region")
       else if (mouseButton === Qt.MiddleButton) root.scan("fullscreen")
       else root.toggle()
+    }
+  }
+
+  PanelWindow {
+    id: highlightWindow
+    screen: root.highlightScreen
+    visible: !!root.highlightScreen && (root.highlightOpen || highlightBox.opacity > 0)
+    anchors { top: true; bottom: true; left: true; right: true }
+    color: "transparent"
+    exclusionMode: ExclusionMode.Ignore
+    WlrLayershell.namespace: "omarchy-qr-tools-highlight"
+    WlrLayershell.layer: WlrLayer.Overlay
+    WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
+    // This is visual feedback only and must never intercept desktop input.
+    mask: Region {}
+
+    Rectangle {
+      id: highlightBox
+      readonly property real inset: Style.space(10)
+      readonly property real sourceLeft: root.scanHighlight
+        ? root.scanHighlight.x * highlightWindow.width / root.scanHighlight.imageWidth
+        : 0
+      readonly property real sourceTop: root.scanHighlight
+        ? root.scanHighlight.y * highlightWindow.height / root.scanHighlight.imageHeight
+        : 0
+      readonly property real sourceRight: root.scanHighlight
+        ? (root.scanHighlight.x + root.scanHighlight.width) * highlightWindow.width
+          / root.scanHighlight.imageWidth
+        : 0
+      readonly property real sourceBottom: root.scanHighlight
+        ? (root.scanHighlight.y + root.scanHighlight.height) * highlightWindow.height
+          / root.scanHighlight.imageHeight
+        : 0
+
+      x: Math.max(0, sourceLeft - inset)
+      y: Math.max(0, sourceTop - inset)
+      width: Math.max(1, Math.min(highlightWindow.width, sourceRight + inset) - x)
+      height: Math.max(1, Math.min(highlightWindow.height, sourceBottom + inset) - y)
+      color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.08)
+      border.color: Color.accent
+      border.width: Math.max(2, Style.space(2))
+      radius: Style.cornerRadius
+      opacity: root.highlightOpen ? 1 : 0
+      scale: root.highlightOpen ? 1 : 1.08
+
+      Behavior on opacity {
+        NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+      }
+      Behavior on scale {
+        NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+      }
+
+      Rectangle {
+        anchors.fill: parent
+        anchors.margins: -Style.space(4)
+        color: "transparent"
+        border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.35)
+        border.width: 1
+        radius: highlightBox.radius + Style.space(4)
+      }
     }
   }
 
