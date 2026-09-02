@@ -24,6 +24,7 @@ Panel {
   property string error: ""
   property string pendingText: ""
   property bool loading: false
+  property bool expectedStop: false
 
   readonly property bool showingQr: qrSize > 0 && !loading && error === ""
 
@@ -38,7 +39,10 @@ Panel {
   }
 
   function close() {
-    if (qrProc.running) qrProc.running = false
+    if (qrProc.running) {
+      root.expectedStop = true
+      qrProc.running = false
+    }
     root.pendingText = ""
     root.qrRows = []
     root.qrSize = 0
@@ -73,6 +77,7 @@ Panel {
     root.qrSize = 0
     root.error = ""
     root.loading = true
+    root.expectedStop = false
     root.sourceLabel = label
     root.pendingText = text
     qrProc.command = command
@@ -102,12 +107,13 @@ Panel {
 
     stdout: StdioCollector {
       waitForEnd: true
-      onStreamFinished: root.updateQr(text)
+      onStreamFinished: if (!root.expectedStop) root.updateQr(text)
     }
 
     stderr: StdioCollector {
       waitForEnd: true
       onStreamFinished: {
+        if (root.expectedStop) return
         var detail = String(text || "").trim()
         if (detail !== "") root.error = detail
       }
@@ -115,6 +121,10 @@ Panel {
 
     onExited: function(exitCode) {
       root.loading = false
+      if (root.expectedStop) {
+        root.expectedStop = false
+        return
+      }
       Qt.callLater(function() {
         if (exitCode !== 0 || root.qrSize === 0) {
           root.qrRows = []
