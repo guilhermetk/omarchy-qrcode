@@ -29,16 +29,34 @@ Panel {
   property bool expectedStop: false
   property var scanHighlight: null
   property bool highlightOpen: false
+  property int exportPixelSize: 1024
+  property string exportOutput: ""
+  property string exportFailure: ""
+  property string exportStatus: ""
+  property bool discardAfterExport: false
+  property bool dependenciesChecked: false
+  property bool qrencodeAvailable: true
+  property bool zbarAvailable: true
+  property bool imagemagickAvailable: true
 
   readonly property bool showingQr: qrSize > 0 && !loading && error === ""
+  readonly property bool dependenciesMissing: dependenciesChecked &&
+    (!qrencodeAvailable || !zbarAvailable || !imagemagickAvailable)
+  readonly property string missingDependencies: {
+    var missing = []
+    if (!qrencodeAvailable) missing.push("qrencode")
+    if (!zbarAvailable) missing.push("zbar")
+    if (!imagemagickAvailable) missing.push("ImageMagick")
+    return missing.join(", ")
+  }
   readonly property var highlightScreen: {
     var screens = Quickshell.screens || []
     var monitor = scanHighlight ? scanHighlight.monitor : ""
+    if (monitor === "") return null
     for (var index = 0; index < screens.length; index++) {
-      if (monitor !== "" && screens[index].name === monitor) return screens[index]
+      if (screens[index].name === monitor) return screens[index]
     }
-    var anchorWindow = button.QsWindow.window
-    return anchorWindow ? anchorWindow.screen : null
+    return null
   }
 
   implicitWidth: button.implicitWidth
@@ -50,8 +68,32 @@ Panel {
   }
 
   function open() {
+    root.refreshDependencies()
     root.controller.show()
     Qt.callLater(function() { input.forceActiveFocus() })
+  }
+
+  function refreshDependencies() {
+    if (!dependencyProc.running) dependencyProc.running = true
+  }
+
+  function applyDependencyStatus(raw) {
+    try {
+      var data = JSON.parse(String(raw || "{}"))
+      root.qrencodeAvailable = data.qrencode === true
+      root.zbarAvailable = data.zbar === true
+      root.imagemagickAvailable = data.imagemagick === true
+      root.dependenciesChecked = true
+    } catch (error) {
+      root.dependenciesChecked = false
+      console.warn(root.moduleName + ": invalid dependency status:", error)
+    }
+  }
+
+  function installDependencies() {
+    if (!root.bar) return
+    root.close()
+    root.bar.run("omarchy launch floating terminal with presentation \"omarchy pkg add qrencode zbar\"")
   }
 
   function close() {
@@ -65,8 +107,13 @@ Panel {
     root.sourceLabel = ""
     root.error = ""
     root.loading = false
+    root.exportStatus = ""
     input.text = ""
     root.controller.hide()
+    if (exportProc.running)
+      root.discardAfterExport = true
+    else
+      Quickshell.execDetached([root.scriptPath("export-qr.sh"), "--discard"])
   }
 
   function toggle() {
@@ -75,25 +122,28 @@ Panel {
   }
 
   function generateText() {
+    if (root.dependenciesChecked && !root.qrencodeAvailable) return
     var text = input.text
     if (text === "") {
       root.error = "Enter text to generate a QR code"
       return
     }
-    root.startGeneration([root.scriptPath("qr-matrix.sh")], text, "Typed text")
+    root.startGeneration([root.scriptPath("qr-matrix.sh"), "--persist"], text, "Typed text")
   }
 
   function generateClipboard() {
-    root.startGeneration([root.scriptPath("qr-matrix.sh"), "--clipboard"], "", "Clipboard")
+    if (root.dependenciesChecked && !root.qrencodeAvailable) return
+    root.startGeneration([root.scriptPath("qr-matrix.sh"), "--clipboard", "--persist"], "", "Clipboard")
   }
 
   function startGeneration(command, text, label) {
-    if (qrProc.running) return
+    if (qrProc.running || exportProc.running) return
     root.qrRows = []
     root.qrSize = 0
     root.error = ""
     root.loading = true
     root.expectedStop = false
+    root.exportStatus = ""
     root.sourceLabel = label
     root.pendingText = text
     qrProc.command = command
@@ -104,10 +154,25 @@ Panel {
     var matrix = Model.parseQrMatrix(raw)
     root.qrRows = matrix.rows
     root.qrSize = matrix.size
+    if (matrix.size > 0) root.exportPixelSize = 1024
     qrCanvas.requestPaint()
   }
 
+  function exportQr() {
+    if (!root.showingQr || exportProc.running || !root.imagemagickAvailable) return
+    root.exportOutput = ""
+    root.exportFailure = ""
+    root.exportStatus = "Exporting..."
+    root.discardAfterExport = false
+    exportProc.command = [root.scriptPath("export-qr.sh"), String(root.exportPixelSize)]
+    exportProc.running = true
+  }
+
   function scan(mode) {
+    if (root.dependenciesChecked && !root.zbarAvailable) {
+      root.open()
+      return
+    }
     root.close()
     if (mode !== "fullscreen") {
       Quickshell.execDetached([root.scriptPath("scan-code.sh"), mode])
@@ -125,6 +190,16 @@ Panel {
     root.scanHighlight = highlight
     root.highlightOpen = true
     highlightTimer.restart()
+  }
+
+  Process {
+    id: dependencyProc
+    command: [root.scriptPath("check-dependencies.sh")]
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.applyDependencyStatus(text)
+    }
   }
 
   Process {
@@ -175,6 +250,48 @@ Panel {
     }
   }
 
+  Process {
+    id: exportProc
+
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.exportOutput = String(text || "").trim()
+    }
+
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: root.exportFailure = String(text || "").trim()
+    }
+
+    onExited: function(exitCode) {
+      Qt.callLater(function() {
+        if (root.discardAfterExport || !root.opened) {
+          root.discardAfterExport = false
+          Quickshell.execDetached([root.scriptPath("export-qr.sh"), "--discard"])
+          return
+        }
+        if (exitCode === 0 && root.exportOutput !== "") {
+          var home = Quickshell.env("HOME") || ""
+          var displayPath = home !== "" && root.exportOutput.indexOf(home + "/") === 0
+            ? "~" + root.exportOutput.slice(home.length)
+            : root.exportOutput
+          root.exportStatus = "Saved and copied to " + displayPath
+        } else {
+          root.exportStatus = root.exportFailure !== ""
+            ? root.exportFailure
+            : "Could not export QR code"
+        }
+      })
+    }
+  }
+
+  Timer {
+    interval: 250
+    running: true
+    repeat: false
+    onTriggered: root.refreshDependencies()
+  }
+
   Timer {
     id: highlightTimer
     interval: 950
@@ -197,8 +314,13 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: "󰐲"
-    tooltipText: "Left: QR tools · Right: scan region · Middle: scan screen"
+    text: root.dependenciesMissing ? "" : "󰐲"
+    active: root.dependenciesMissing
+    activeColor: Color.urgent
+    useActiveColor: true
+    tooltipText: root.dependenciesMissing
+      ? "QR Tools needs: " + root.missingDependencies + " · Left-click for setup"
+      : "Left: QR tools · Right: scan region · Middle: scan screen"
 
     onPressed: function(mouseButton) {
       if (mouseButton === Qt.RightButton) root.scan("region")
@@ -219,6 +341,48 @@ Panel {
     WlrLayershell.keyboardFocus: WlrKeyboardFocus.None
     // This is visual feedback only and must never intercept desktop input.
     mask: Region {}
+
+    Item {
+      id: highlightScrim
+      anchors.fill: parent
+      opacity: root.highlightOpen ? 1 : 0
+
+      Behavior on opacity {
+        NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+      }
+
+      Rectangle {
+        x: 0
+        y: 0
+        width: parent.width
+        height: highlightBox.y
+        color: Qt.rgba(0, 0, 0, 0.56)
+      }
+
+      Rectangle {
+        x: 0
+        y: highlightBox.y
+        width: highlightBox.x
+        height: highlightBox.height
+        color: Qt.rgba(0, 0, 0, 0.56)
+      }
+
+      Rectangle {
+        x: highlightBox.x + highlightBox.width
+        y: highlightBox.y
+        width: Math.max(0, parent.width - x)
+        height: highlightBox.height
+        color: Qt.rgba(0, 0, 0, 0.56)
+      }
+
+      Rectangle {
+        x: 0
+        y: highlightBox.y + highlightBox.height
+        width: parent.width
+        height: Math.max(0, parent.height - y)
+        color: Qt.rgba(0, 0, 0, 0.56)
+      }
+    }
 
     Rectangle {
       id: highlightBox
@@ -331,6 +495,64 @@ Panel {
             }
           }
 
+          Rectangle {
+            visible: root.dependenciesMissing
+            Layout.fillWidth: true
+            implicitHeight: dependencyWarning.implicitHeight + Style.space(16)
+            color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.10)
+            border.color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, 0.55)
+            border.width: 1
+            radius: Style.cornerRadius
+
+            ColumnLayout {
+              id: dependencyWarning
+              anchors.fill: parent
+              anchors.margins: Style.space(8)
+              spacing: Style.space(6)
+
+              RowLayout {
+                Layout.fillWidth: true
+                spacing: Style.space(8)
+
+                Text {
+                  text: ""
+                  color: Color.urgent
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.title
+                }
+
+                Text {
+                  Layout.fillWidth: true
+                  text: "Missing: " + root.missingDependencies
+                  color: root.contentForeground
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  font.bold: true
+                  wrapMode: Text.Wrap
+                }
+              }
+
+              Text {
+                Layout.fillWidth: true
+                text: "Install the required packages to enable all QR Tools features."
+                color: Qt.darker(root.contentForeground, 1.35)
+                font.family: root.contentFontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.Wrap
+              }
+
+              Button {
+                Layout.fillWidth: true
+                text: "Install dependencies"
+                iconText: "󰏔"
+                bordered: true
+                focusable: true
+                foreground: root.contentForeground
+                onClicked: root.installDependencies()
+              }
+            }
+          }
+
           RowLayout {
             Layout.fillWidth: true
             spacing: Style.space(8)
@@ -342,6 +564,7 @@ Panel {
               bordered: true
               focusable: true
               foreground: root.contentForeground
+              enabled: root.zbarAvailable
               onClicked: root.scan("region")
             }
 
@@ -352,6 +575,7 @@ Panel {
               bordered: true
               focusable: true
               foreground: root.contentForeground
+              enabled: root.zbarAvailable
               onClicked: root.scan("fullscreen")
             }
           }
@@ -372,7 +596,7 @@ Panel {
               Layout.fillWidth: true
               placeholderText: "URL or text"
               foreground: root.contentForeground
-              enabled: !root.loading
+              enabled: !root.loading && !exportProc.running && root.qrencodeAvailable
               onAccepted: root.generateText()
 
               Keys.onEscapePressed: function(event) {
@@ -386,7 +610,8 @@ Panel {
               bordered: true
               focusable: true
               foreground: root.contentForeground
-              enabled: !root.loading && input.text !== ""
+              enabled: !root.loading && !exportProc.running && root.qrencodeAvailable
+                && input.text !== ""
               onClicked: root.generateText()
             }
           }
@@ -398,7 +623,7 @@ Panel {
             bordered: true
             focusable: true
             foreground: root.contentForeground
-            enabled: !root.loading
+            enabled: !root.loading && !exportProc.running && root.qrencodeAvailable
             onClicked: root.generateClipboard()
           }
 
@@ -475,9 +700,71 @@ Panel {
               }
             }
 
+            ColumnLayout {
+              Layout.fillWidth: true
+              spacing: Style.space(4)
+
+              RowLayout {
+                Layout.fillWidth: true
+
+                Text {
+                  text: "PNG SIZE"
+                  color: Qt.darker(root.contentForeground, 1.45)
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                  font.letterSpacing: 1.2
+                }
+
+                Item { Layout.fillWidth: true }
+
+                Text {
+                  text: root.exportPixelSize + " x " + root.exportPixelSize + " px"
+                  color: root.contentForeground
+                  font.family: root.contentFontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+              }
+
+              PanelSlider {
+                Layout.fillWidth: true
+                bar: root.bar
+                minimum: Math.max(256, root.qrSize * 2)
+                maximum: 2048
+                step: 1
+                integer: true
+                value: root.exportPixelSize
+                onMoved: function(value) { root.exportPixelSize = Math.round(value) }
+              }
+            }
+
+            Button {
+              Layout.fillWidth: true
+              text: exportProc.running ? "Exporting..." : "Export PNG"
+              iconText: "󰆓"
+              bordered: true
+              focusable: true
+              foreground: root.contentForeground
+              enabled: !exportProc.running && root.imagemagickAvailable
+              onClicked: root.exportQr()
+            }
+
+            Text {
+              visible: root.exportStatus !== ""
+              Layout.fillWidth: true
+              text: root.exportStatus
+              color: root.exportFailure !== "" ? Color.urgent
+                : Qt.darker(root.contentForeground, 1.35)
+              font.family: root.contentFontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.Wrap
+              horizontalAlignment: Text.AlignHCenter
+            }
+
             Text {
               Layout.fillWidth: true
-              text: "Nothing is uploaded or saved"
+              text: "Generated data stays local"
               color: Qt.darker(root.contentForeground, 1.55)
               font.family: root.contentFontFamily
               font.pixelSize: Style.font.caption

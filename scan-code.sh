@@ -91,6 +91,12 @@ if ((scan_status != 0)); then
 fi
 [[ -s $decoded_file ]] || fail 'No QR code or barcode found'
 
+# zbarimg terminates each decoded symbol with one newline that is not part of
+# the payload. Remove only the final record separator; an encoded trailing
+# newline remains as the preceding byte.
+truncate -s -1 "$decoded_file"
+[[ -s $decoded_file ]] || fail 'No QR code or barcode found'
+
 if ! wl-copy --type 'text/plain;charset=utf-8' <"$decoded_file"; then
   fail 'Could not copy decoded data to the clipboard'
 fi
