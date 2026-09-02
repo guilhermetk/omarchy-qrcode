@@ -141,7 +141,7 @@ Panel {
     owner: root.barIdentity
     bar: root.bar
     open: root.opened
-    centerOnBar: true
+    centerOnBar: false
     focusTarget: input
     contentWidth: panel.fittedContentWidth(480)
     contentHeight: panel.fittedContentHeight(content.implicitHeight)
