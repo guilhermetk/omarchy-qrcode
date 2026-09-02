@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "gtiscoski.qr-tools",
+  "name": "QR Tools",
+  "version": "0.1.0",
+  "author": "Guilherme Tiscoski",
+  "description": "Generate QR codes and scan QR codes or barcodes from the screen",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "QR Tools",
+    "description": "Generate QR codes and scan codes from the screen",
+    "category": "Utility",
+    "allowMultiple": false
+  }
+}
