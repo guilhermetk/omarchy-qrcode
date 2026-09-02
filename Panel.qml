@@ -141,6 +141,8 @@ Panel {
     owner: root.barIdentity
     bar: root.bar
     open: root.opened
+    // Follow the bar icon. Install placement is chosen at enable time
+    // (left/center/right); centering on the bar would ignore that choice.
     centerOnBar: false
     focusTarget: input
     contentWidth: panel.fittedContentWidth(480)

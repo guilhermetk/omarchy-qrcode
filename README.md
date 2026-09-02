@@ -34,8 +34,10 @@ Omarchy already provides `wl-clipboard` and its screenshot dependencies.
 omarchy plugin add https://github.com/guilhermetk/omarchy-qrcode --enable
 ```
 
-Enabling places the widget in the right bar section by default, with the
-other status icons. Move it later with `omarchy bar move gtiscoski.qr-tools`.
+`omarchy plugin add --enable` asks which bar section to use (left, center, or
+right). The manifest pre-selects **right**, next to the other status icons, but
+the panel always opens under the QR icon wherever you place it. Move it later
+with `omarchy bar move gtiscoski.qr-tools`.
 
 For local development, validate the repository and install it through your
 preferred local Git remote:
