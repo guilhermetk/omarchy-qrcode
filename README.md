@@ -30,11 +30,12 @@ Omarchy already provides `wl-clipboard` and its screenshot dependencies.
 
 ## Install
 
-Once this repository is public:
-
 ```bash
 omarchy plugin add https://github.com/guilhermetk/omarchy-qrcode --enable
 ```
+
+Enabling places the widget in the right bar section by default, with the
+other status icons. Move it later with `omarchy bar move gtiscoski.qr-tools`.
 
 For local development, validate the repository and install it through your
 preferred local Git remote:
