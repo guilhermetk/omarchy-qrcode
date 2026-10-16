@@ -68,6 +68,28 @@ class DirectoryTests(EnvironmentMixin, unittest.TestCase):
             with self.assertRaisesRegex(helper.HelperError, "pictures_unavailable"):
                 helper.open_pictures_directory()
 
+    def test_dot_prefixed_path_components_are_accepted(self):
+        # A runtime directory whose path contains a dot-prefixed component (a
+        # TMPDIR under ~/.cache, a dotfile-style home) is legitimate: the walk
+        # allows a leading dot, while "." and ".." stay refused.
+        nested = os.path.join(self.temporary.name, ".hidden")
+        os.mkdir(nested, 0o700)
+        runtime = os.path.join(nested, "runtime")
+        os.mkdir(runtime, 0o700)
+
+        for path in (nested, runtime):
+            fd = helper.open_absolute_directory(path)
+            os.close(fd)
+
+        with mock.patch.dict(os.environ, {"XDG_RUNTIME_DIR": runtime}):
+            fd = helper.open_runtime_root()
+        self.addCleanup(os.close, fd)
+        self.assertEqual(stat.S_IMODE(os.fstat(fd).st_mode), 0o700)
+
+        for component in (".", ".."):
+            with self.assertRaisesRegex(helper.HelperError, "unsafe_directory"):
+                helper.open_absolute_directory(os.path.join(runtime, component))
+
 
 class GenerationTests(unittest.TestCase):
     def run_helper(self, payload):

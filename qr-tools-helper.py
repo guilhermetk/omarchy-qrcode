@@ -48,7 +48,12 @@ NOTIFY_TIMEOUT = 3.0
 
 RUNTIME_NAME = "omarchy-qr-tools"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-SAFE_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+# One path component of a directory the helper opens for itself. A leading dot
+# is allowed: the runtime and home directories are walked component by
+# component, and a dot-prefixed directory (a TMPDIR under ~/.cache, a
+# dotfile-style home) is a legitimate name rather than traversal - "." and ".."
+# still fail, and a single component can never contain a separator.
+SAFE_COMPONENT = re.compile(r"^\.?[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 EXPORT_NAME = re.compile(r"^qr-code-[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}-[0-9a-f]{8}\.png$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 MONITOR_NAME = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
