@@ -68,6 +68,21 @@ class DirectoryTests(EnvironmentMixin, unittest.TestCase):
             with self.assertRaisesRegex(helper.HelperError, "pictures_unavailable"):
                 helper.open_pictures_directory()
 
+    def test_directory_enumeration_is_position_independent(self):
+        # An operation directory is scanned while it is still empty (the capture
+        # is running) and scanned again once the writer has finished. The second
+        # scan has to see what appeared in between, on any filesystem.
+        root = os.path.join(self.temporary.name, "enumeration")
+        os.mkdir(root, 0o700)
+        fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        self.addCleanup(os.close, fd)
+
+        self.assertEqual(helper.bounded_directory_entries(fd, 8), [])
+        for name in ("one.png", "two.png"):
+            open(os.path.join(root, name), "wb").close()
+        self.assertEqual(sorted(helper.bounded_directory_entries(fd, 8)),
+                         ["one.png", "two.png"])
+
 
 class GenerationTests(unittest.TestCase):
     def run_helper(self, payload):
