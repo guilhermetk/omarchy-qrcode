@@ -430,5 +430,45 @@ class ProtocolTests(unittest.TestCase):
                 helper.decode_base64_line(helper.MAX_DECODED_BYTES)
 
 
+class SensitiveClipboardTests(unittest.TestCase):
+    def paste_stub(self, types, payload=b""):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.calls = os.path.join(directory.name, "calls.log")
+        stub = os.path.join(directory.name, "wl-paste")
+        body = (
+            "#!/usr/bin/python3\n"
+            "import sys\n"
+            "open(%r, 'a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+            "if '--list-types' in sys.argv:\n"
+            "    sys.stdout.write(%r)\n"
+            "else:\n"
+            "    sys.stdout.buffer.write(%r)\n"
+        ) % (self.calls, types, payload)
+        with open(stub, "wb") as stream:
+            stream.write(body.encode())
+        os.chmod(stub, 0o700)
+        return stub
+
+    def invoked_with(self):
+        with open(self.calls, "r", encoding="utf-8") as stream:
+            return stream.read().splitlines()
+
+    def test_sensitive_clipboard_types_are_refused_before_the_payload_is_read(self):
+        stub = self.paste_stub("text/plain\nx-kde-passwordmanagerhint\n")
+        with mock.patch.object(helper, "trusted_tool", return_value=stub):
+            with self.assertRaisesRegex(helper.HelperError, "clipboard_sensitive"):
+                helper.clipboard_payload()
+        # The refusal is decided on the advertised types, so the clipboard
+        # contents are never read.
+        self.assertEqual(self.invoked_with(), ["--list-types"])
+
+    def test_ordinary_clipboard_types_return_the_payload(self):
+        stub = self.paste_stub("text/plain\n", b"nothing sensitive\n")
+        with mock.patch.object(helper, "trusted_tool", return_value=stub):
+            self.assertEqual(helper.clipboard_payload(), b"nothing sensitive\n")
+        self.assertEqual(self.invoked_with(), ["--list-types", "--no-newline"])
+
+
 if __name__ == "__main__":
     unittest.main()
