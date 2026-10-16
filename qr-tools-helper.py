@@ -755,6 +755,12 @@ def new_operation_directory(root_fd):
 
 
 def bounded_directory_entries(directory_fd, maximum):
+    # Enumerate from the start every time. scandir() on a directory descriptor
+    # resumes wherever that descriptor's previous enumeration stopped on some
+    # filesystems (btrfs), so a directory scanned while it was still empty and
+    # re-scanned after the writer finished reads as empty - which turns a
+    # completed capture into "scan cancelled".
+    os.lseek(directory_fd, 0, os.SEEK_SET)
     entries = []
     with os.scandir(directory_fd) as iterator:
         for entry in iterator:
